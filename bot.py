@@ -8,7 +8,6 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# Compétitions
 COMPETITIONS = {
     "FL1": "🇫🇷 Ligue 1", "PL": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
     "PD": "🇪🇸 La Liga", "SA": "🇮🇹 Serie A", "BL1": "🇩🇪 Bundesliga",
@@ -142,23 +141,38 @@ def get_ai_analysis(match_list):
 
 {matches_text}
 
-Analyse ces matchs et identifie les 3 a 5 meilleures opportunites de paris. Pour chaque pari recommande :
+Ta mission : analyser ces matchs et proposer une STRATEGIE DE PARIS claire et structuree.
 
-1. Le match et le type de pari (resultat 1N2, total buts, les deux equipes marquent, etc.)
-2. Ta probabilite estimee (en %)
-3. Une note de confiance sur 10
-4. Le feu tricolore : VERT (8-10/10), JAUNE (6-7/10), ROUGE (4-5/10)
-5. Une justification en 1-2 lignes
+STRUCTURE DE TA REPONSE :
 
-REGLES :
+1) D'abord, liste tes PARIS SIMPLES recommandes (3 a 5 max) :
+Pour chaque pari simple, indique :
+- Le match et le type de pari (resultat 1N2, total buts, BTTS, etc.)
+- Ta probabilite estimee (en %)
+- Note de confiance /10
+- Feu : 🟢 VERT (8-10/10), 🟡 JAUNE (6-7/10), 🔴 ROUGE (4-5/10)
+- Justification en 1 ligne
+
+2) Ensuite, propose UN COMBINE si pertinent (2-3 selections max) :
+- Liste les selections du combine
+- La cote totale estimee
+- La note de confiance globale /10
+- Pourquoi ce combine fait sens
+
+3) Termine par ton VERDICT :
+- Indique clairement ta preference : "PARIS SIMPLES recommandes" ou "COMBINE recommande" ou "MIX des deux"
+- Explique pourquoi en 1 ligne
+
+REGLES STRICTES :
 - JAMAIS de paris handicap
 - JAMAIS de cotes entre 1.01 et 1.10
-- Privilegier la probabilite de reussite
-- Si aucun match n'inspire confiance, dis "PAS DE PARI AUJOURD'HUI"
+- Privilegie TOUJOURS les paris simples (plus surs)
+- Ne propose un combine QUE si les selections sont tres solides
+- Si aucun match n'inspire confiance : "PAS DE PARI AUJOURD'HUI"
 - Sois honnete et prudent
 - Reponds en francais
 - Pas de markdown, juste du texte simple avec des emojis
-- Maximum 1500 caracteres"""
+- Maximum 2000 caracteres"""
 
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -169,7 +183,7 @@ REGLES :
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 800
+        "max_tokens": 1000
     }
 
     try:
@@ -217,7 +231,7 @@ def main():
         print(f"\n🤖 Analyse IA de {len(match_list)} matchs a venir...")
         analysis = get_ai_analysis(match_list)
         if analysis:
-            ai_message = f"🤖 ANALYSE IA — Paris du jour\n\n{analysis}\n\n⚠️ Rappel : les paris sportifs comportent des risques. Ne misez que ce que vous pouvez perdre."
+            ai_message = f"🤖 ANALYSE IA — Paris du jour\n\n{analysis}"
             send_telegram(ai_message)
     else:
         print("ℹ️ Aucun match a venir a analyser")
