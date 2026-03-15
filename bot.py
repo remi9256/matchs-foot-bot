@@ -7,32 +7,44 @@ API_KEY = os.environ.get("FOOTBALL_DATA_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# Les 5 grands championnats
+# Les 5 grands championnats (code football-data.org)
 LEAGUES = {
-    "PL": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
     "FL1": "🇫🇷 Ligue 1",
-    "SA": "🇮🇹 Serie A",
+    "PL": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
     "PD": "🇪🇸 La Liga",
+    "SA": "🇮🇹 Serie A",
     "BL1": "🇩🇪 Bundesliga"
 }
 
 
 def get_fixtures():
-    """Récupère tous les matchs du jour via football-data.org."""
-    url = "https://api.football-data.org/v4/matches"
+    """Récupère les matchs du jour pour chaque championnat."""
+    tz_fr = timezone(timedelta(hours=1))
+    today = datetime.now(tz_fr).strftime("%Y-%m-%d")
+    all_matches = []
+
     headers = {"X-Auth-Token": API_KEY}
 
-    try:
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        matches = data.get("matches", [])
-        # Filtrer uniquement les 5 grands championnats
-        filtered = [m for m in matches if m["competition"]["code"] in LEAGUES]
-        print(f"✅ API football-data.org: {len(filtered)} matchs trouvés sur {len(matches)} total")
-        return filtered
-    except Exception as e:
-        print(f"❌ Erreur API: {e}")
-        return []
+    for code, name in LEAGUES.items():
+        url = f"https://api.football-data.org/v4/competitions/{code}/matches"
+        params = {
+            "dateFrom": today,
+            "dateTo": today
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            data = response.json()
+            matches = data.get("matches", [])
+            if matches:
+                all_matches.extend(matches)
+                print(f"✅ {name}: {len(matches)} matchs")
+            else:
+                print(f"⚪ {name}: aucun match aujourd'hui")
+        except Exception as e:
+            print(f"❌ Erreur {name}: {e}")
+
+    return all_matches
 
 
 def format_message(matches):
@@ -52,25 +64,25 @@ def format_message(matches):
         heure_fr = utc_time.astimezone(tz_fr)
         heure_str = heure_fr.strftime("%Hh%M")
 
-        home = match["homeTeam"]["shortName"] or match["homeTeam"]["name"]
-        away = match["awayTeam"]["shortName"] or match["awayTeam"]["name"]
+        home = match["homeTeam"].get("shortName") or match["homeTeam"]["name"]
+        away = match["awayTeam"].get("shortName") or match["awayTeam"]["name"]
 
         # Score si le match est en cours ou terminé
         status = match["status"]
-        if status in ("IN_PLAY", "PAUSED", "FINISHED"):
-            h_goals = match["score"]["fullTime"]["home"] or 0
-            a_goals = match["score"]["fullTime"]["away"] or 0
-            score_str = f" ({h_goals}-{a_goals})"
-            if status == "FINISHED":
-                score_str += " ✅"
-            elif status in ("IN_PLAY", "PAUSED"):
-                score_str += " 🔴 LIVE"
+        if status == "FINISHED":
+            h = match["score"]["fullTime"]["home"]
+            a = match["score"]["fullTime"]["away"]
+            score_str = f" → {h}-{a} ✅"
+        elif status in ("IN_PLAY", "PAUSED"):
+            h = match["score"]["fullTime"]["home"] or 0
+            a = match["score"]["fullTime"]["away"] or 0
+            score_str = f" → {h}-{a} 🔴 LIVE"
         else:
             score_str = ""
 
         par_ligue[code].append((heure_str, f"  • {home} vs {away} — {heure_str}{score_str}"))
 
-    # Ordre d'affichage : Ligue 1 d'abord
+    # Ordre d'affichage
     ordre = ["FL1", "PL", "PD", "SA", "BL1"]
     for code in ordre:
         if code in par_ligue:
@@ -106,7 +118,7 @@ def send_telegram(message):
 def main():
     print("🔄 Récupération des matchs...")
     matches = get_fixtures()
-    print(f"📋 {len(matches)} matchs trouvés")
+    print(f"📋 {len(matches)} matchs trouvés au total")
     message = format_message(matches)
     print(message)
     send_telegram(message)
