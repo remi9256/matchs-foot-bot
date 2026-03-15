@@ -30,7 +30,19 @@ TV_CHANNELS = {
 DISPLAY_ORDER = ["FL1", "PL", "PD", "SA", "BL1", "CL", "EL", "UCL", "FAC", "FLC", "CDR", "CIT", "DFB"]
 
 
-def get_fixtures():
+def get_mode():
+    """Determine si on est en mode matin ou soir."""
+    manual = os.environ.get("MANUAL_MODE", "")
+    if manual:
+        return manual
+
+    cron = os.environ.get("CRON_SCHEDULE", "")
+    if "22" in cron:
+        return "evening"
+    return "morning"
+
+
+def get_fixtures(include_finished=False):
     tz_fr = timezone(timedelta(hours=1))
     today = datetime.now(tz_fr)
     today_str = today.strftime("%Y-%m-%d")
@@ -131,6 +143,22 @@ def build_match_list_for_ai(matches):
     return scheduled
 
 
+def build_results_for_ai(matches):
+    """Construit la liste des resultats pour le bilan du soir."""
+    tz_fr = timezone(timedelta(hours=1))
+    results = []
+    for match in matches:
+        if match["status"] != "FINISHED":
+            continue
+        home = match["homeTeam"].get("shortName") or match["homeTeam"]["name"]
+        away = match["awayTeam"].get("shortName") or match["awayTeam"]["name"]
+        h = match["score"]["fullTime"]["home"]
+        a = match["score"]["fullTime"]["away"]
+        comp = match["competition"]["name"]
+        results.append(f"- {home} {h}-{a} {away} ({comp})")
+    return results
+
+
 def get_ai_analysis(match_list):
     if not GROQ_API_KEY or not match_list:
         return None
@@ -174,6 +202,43 @@ REGLES STRICTES :
 - Pas de markdown, juste du texte simple avec des emojis
 - Maximum 2000 caracteres"""
 
+    return call_groq(prompt)
+
+
+def get_ai_results_review(results_list):
+    """Demande a l'IA de faire le bilan de ses paris."""
+    if not GROQ_API_KEY or not results_list:
+        return None
+
+    results_text = "\n".join(results_list)
+
+    prompt = f"""Tu es un expert francais en analyse de football et paris sportifs. Voici les RESULTATS des matchs du jour :
+
+{results_text}
+
+Ta mission : faire le BILAN de la journee de paris.
+
+Pour chaque resultat :
+1) Analyse si les favoris ont gagne ou s'il y a eu des surprises
+2) Identifie les resultats previsibles (qui auraient ete des paris gagnants)
+3) Identifie les surprises (qui auraient ete des pieges)
+
+Puis donne :
+- Un BILAN GLOBAL de la journee (journee previsible ou pleine de surprises ?)
+- Les LECONS a retenir pour les prochains paris
+- Une NOTE de la journee pour les parieurs /10 (10 = tout etait previsible)
+
+FORMAT :
+- Reponds en francais
+- Pas de markdown, juste du texte simple avec des emojis
+- Sois concis, maximum 1500 caracteres
+- Utilise ✅ pour les resultats previsibles et ❌ pour les surprises"""
+
+    return call_groq(prompt)
+
+
+def call_groq(prompt):
+    """Appel generique a l'API Groq."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -191,7 +256,7 @@ REGLES STRICTES :
         if resp.status_code == 200:
             data = resp.json()
             text = data["choices"][0]["message"]["content"]
-            print(f"✅ Analyse IA generee ({len(text)} caracteres)")
+            print(f"✅ Reponse IA ({len(text)} caracteres)")
             return text
         else:
             print(f"❌ Erreur Groq: {resp.status_code} - {resp.text[:300]}")
@@ -199,6 +264,40 @@ REGLES STRICTES :
     except Exception as e:
         print(f"❌ Erreur Groq: {e}")
         return None
+
+
+def format_results_message(matches):
+    """Formate les resultats du soir."""
+    tz_fr = timezone(timedelta(hours=1))
+    today = datetime.now(tz_fr).strftime("%d/%m/%Y")
+    message = f"🏁 Resultats du jour — {today}\n\n"
+
+    par_comp = {}
+    for match in matches:
+        if match["status"] != "FINISHED":
+            continue
+        code = match["competition"]["code"]
+        if code not in par_comp:
+            par_comp[code] = []
+
+        home = match["homeTeam"].get("shortName") or match["homeTeam"]["name"]
+        away = match["awayTeam"].get("shortName") or match["awayTeam"]["name"]
+        h = match["score"]["fullTime"]["home"]
+        a = match["score"]["fullTime"]["away"]
+
+        par_comp[code].append(f"  • {home} {h}-{a} {away}")
+
+    for code in DISPLAY_ORDER:
+        if code in par_comp:
+            message += f"{COMPETITIONS[code]}\n"
+            for m in par_comp[code]:
+                message += f"{m}\n"
+            message += "\n"
+
+    if not any(par_comp.values()):
+        message += "Aucun resultat disponible."
+
+    return message
 
 
 def send_telegram(message):
@@ -213,13 +312,9 @@ def send_telegram(message):
         print(f"❌ Erreur Telegram: {resp.text[:200]}")
 
 
-def main():
-    print("=" * 50)
-    print("🔄 Recuperation des matchs...")
-    print(f"🔑 Football API: {'Oui' if API_KEY else 'NON'}")
-    print(f"🤖 Groq API: {'Oui' if GROQ_API_KEY else 'NON'}")
-    print("=" * 50)
-
+def morning():
+    """Envoi du matin : matchs + analyse IA."""
+    print("☀️ MODE MATIN")
     matches = get_fixtures()
     print(f"\n📋 {len(matches)} matchs trouves")
 
@@ -235,6 +330,42 @@ def main():
             send_telegram(ai_message)
     else:
         print("ℹ️ Aucun match a venir a analyser")
+
+
+def evening():
+    """Envoi du soir : resultats + bilan IA."""
+    print("🌙 MODE SOIR")
+    matches = get_fixtures()
+    print(f"\n📋 {len(matches)} matchs trouves")
+
+    # 1. Envoyer les resultats
+    results_msg = format_results_message(matches)
+    send_telegram(results_msg)
+
+    # 2. Bilan IA
+    results_list = build_results_for_ai(matches)
+    if results_list:
+        print(f"\n🤖 Bilan IA de {len(results_list)} matchs termines...")
+        review = get_ai_results_review(results_list)
+        if review:
+            review_msg = f"🤖 BILAN IA — Analyse des resultats\n\n{review}"
+            send_telegram(review_msg)
+    else:
+        print("ℹ️ Aucun match termine a analyser")
+
+
+def main():
+    mode = get_mode()
+    print("=" * 50)
+    print(f"🔄 Mode: {mode}")
+    print(f"🔑 Football API: {'Oui' if API_KEY else 'NON'}")
+    print(f"🤖 Groq API: {'Oui' if GROQ_API_KEY else 'NON'}")
+    print("=" * 50)
+
+    if mode == "evening":
+        evening()
+    else:
+        morning()
 
 
 if __name__ == "__main__":
