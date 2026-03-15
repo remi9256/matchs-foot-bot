@@ -20,27 +20,44 @@ LEAGUES = {
 def get_fixtures():
     """Récupère les matchs du jour pour chaque championnat."""
     tz_fr = timezone(timedelta(hours=1))
-    today = datetime.now(tz_fr).strftime("%Y-%m-%d")
-    all_matches = []
+    today = datetime.now(tz_fr)
+    today_str = today.strftime("%Y-%m-%d")
+    # dateTo est EXCLUSIF dans l'API, donc on met le lendemain
+    tomorrow_str = (today + timedelta(days=1)).strftime("%Y-%m-%d")
 
+    print(f"📅 Date recherchée: {today_str} (dateTo: {tomorrow_str})")
+    print(f"🕐 Heure UTC: {datetime.now(timezone.utc).strftime('%H:%M')}")
+    print(f"🕐 Heure FR: {today.strftime('%H:%M')}")
+
+    all_matches = []
     headers = {"X-Auth-Token": API_KEY}
 
     for code, name in LEAGUES.items():
         url = f"https://api.football-data.org/v4/competitions/{code}/matches"
         params = {
-            "dateFrom": today,
-            "dateTo": today
+            "dateFrom": today_str,
+            "dateTo": tomorrow_str
         }
 
         try:
             response = requests.get(url, headers=headers, params=params)
-            data = response.json()
-            matches = data.get("matches", [])
-            if matches:
-                all_matches.extend(matches)
-                print(f"✅ {name}: {len(matches)} matchs")
+            print(f"🔍 {name} - Status HTTP: {response.status_code}")
+
+            if response.status_code == 200:
+                data = response.json()
+                matches = data.get("matches", [])
+                filters = data.get("filters", {})
+                print(f"   Filtres appliqués: {filters}")
+                print(f"   Nombre de matchs: {len(matches)}")
+
+                if matches:
+                    all_matches.extend(matches)
+                    print(f"   ✅ {len(matches)} matchs trouvés")
+                else:
+                    print(f"   ⚪ Aucun match")
             else:
-                print(f"⚪ {name}: aucun match aujourd'hui")
+                print(f"   ❌ Erreur: {response.text[:200]}")
+
         except Exception as e:
             print(f"❌ Erreur {name}: {e}")
 
@@ -59,7 +76,6 @@ def format_message(matches):
         if code not in par_ligue:
             par_ligue[code] = []
 
-        # Convertir l'heure en heure française
         utc_time = datetime.fromisoformat(match["utcDate"].replace("Z", "+00:00"))
         heure_fr = utc_time.astimezone(tz_fr)
         heure_str = heure_fr.strftime("%Hh%M")
@@ -67,7 +83,6 @@ def format_message(matches):
         home = match["homeTeam"].get("shortName") or match["homeTeam"]["name"]
         away = match["awayTeam"].get("shortName") or match["awayTeam"]["name"]
 
-        # Score si le match est en cours ou terminé
         status = match["status"]
         if status == "FINISHED":
             h = match["score"]["fullTime"]["home"]
@@ -82,7 +97,6 @@ def format_message(matches):
 
         par_ligue[code].append((heure_str, f"  • {home} vs {away} — {heure_str}{score_str}"))
 
-    # Ordre d'affichage
     ordre = ["FL1", "PL", "PD", "SA", "BL1"]
     for code in ordre:
         if code in par_ligue:
@@ -110,17 +124,25 @@ def send_telegram(message):
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
-        print("✅ Message envoyé avec succès !")
+        print("✅ Message Telegram envoyé !")
     else:
         print(f"❌ Erreur Telegram: {response.text}")
 
 
 def main():
+    print("=" * 50)
     print("🔄 Récupération des matchs...")
+    print(f"🔑 Clé API présente: {'Oui' if API_KEY else 'NON !!!'}")
+    print(f"🤖 Token Telegram présent: {'Oui' if TELEGRAM_TOKEN else 'NON !!!'}")
+    print(f"💬 Chat ID présent: {'Oui' if CHAT_ID else 'NON !!!'}")
+    print("=" * 50)
+
     matches = get_fixtures()
-    print(f"📋 {len(matches)} matchs trouvés au total")
+    print(f"\n📋 TOTAL: {len(matches)} matchs trouvés")
     message = format_message(matches)
+    print("\n--- MESSAGE ---")
     print(message)
+    print("--- FIN ---\n")
     send_telegram(message)
 
 
