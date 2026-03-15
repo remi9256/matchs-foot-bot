@@ -1,0 +1,14 @@
+services:
+  - type: cron
+    name: matchs-foot-bot
+    runtime: python
+    schedule: "0 7 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
