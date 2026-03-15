@@ -8,7 +8,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# Championnats + Coupes + Coupes d'Europe (football-data.org)
+# Championnats + Coupes + Coupes d'Europe
 COMPETITIONS = {
     "FL1": "🇫🇷 Ligue 1",
     "PL":  "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
@@ -25,7 +25,6 @@ COMPETITIONS = {
     "UCL": "🏆 Conference League",
 }
 
-# Mapping entre football-data.org codes et The Odds API sport keys
 ODDS_SPORT_KEYS = {
     "FL1": "soccer_france_ligue_one",
     "PL":  "soccer_epl",
@@ -42,14 +41,17 @@ ODDS_SPORT_KEYS = {
     "FLC": "soccer_efl_cup",
 }
 
+# Bookmakers préférés par ordre de priorité
+PREFERRED_BOOKMAKERS = ["betclic", "winamax", "unibet", "betsson", "pinnacle", "1xbet"]
+
 DISPLAY_ORDER = ["FL1", "PL", "PD", "SA", "BL1", "CL", "EL", "UCL", "FAC", "FLC", "CDR", "CIT", "DFB"]
 
 
 def get_odds():
-    """Récupère les cotes Betclic pour tous les matchs du jour."""
+    """Récupère les cotes pour tous les matchs du jour."""
     odds_data = {}
     if not ODDS_API_KEY:
-        print("⚠️ Pas de clé Odds API, cotes ignorées")
+        print("⚠️ Pas de clé Odds API")
         return odds_data
 
     for code, sport_key in ODDS_SPORT_KEYS.items():
@@ -59,7 +61,6 @@ def get_odds():
             "regions": "eu",
             "markets": "h2h",
             "oddsFormat": "decimal",
-            "bookmakers": "betclic",
         }
         try:
             response = requests.get(url, params=params)
@@ -68,50 +69,96 @@ def get_odds():
                 for game in games:
                     home = game.get("home_team", "")
                     away = game.get("away_team", "")
-                    key = f"{home}|{away}".lower()
 
-                    for bk in game.get("bookmakers", []):
-                        for market in bk.get("markets", []):
-                            if market["key"] == "h2h":
-                                outcomes = market["outcomes"]
-                                cotes = {}
-                                for o in outcomes:
-                                    if o["name"] == home:
-                                        cotes["1"] = o["price"]
-                                    elif o["name"] == away:
-                                        cotes["2"] = o["price"]
-                                    elif o["name"] == "Draw":
-                                        cotes["N"] = o["price"]
+                    # Chercher le meilleur bookmaker disponible
+                    best_cotes = None
+                    best_bk = None
+
+                    bookmakers = game.get("bookmakers", [])
+                    # D'abord chercher un bookmaker préféré
+                    for pref in PREFERRED_BOOKMAKERS:
+                        for bk in bookmakers:
+                            if bk["key"] == pref:
+                                cotes = extract_cotes(bk, home, away)
                                 if cotes:
-                                    odds_data[key] = cotes
+                                    best_cotes = cotes
+                                    best_bk = bk.get("title", pref)
+                                    break
+                        if best_cotes:
+                            break
+
+                    # Sinon prendre le premier bookmaker dispo
+                    if not best_cotes and bookmakers:
+                        bk = bookmakers[0]
+                        cotes = extract_cotes(bk, home, away)
+                        if cotes:
+                            best_cotes = cotes
+                            best_bk = bk.get("title", "?")
+
+                    if best_cotes:
+                        # Stocker avec plusieurs clés pour faciliter le matching
+                        best_cotes["bk"] = best_bk
+                        odds_data[f"{home}|{away}".lower()] = best_cotes
 
                 remaining = response.headers.get("x-requests-remaining", "?")
                 if games:
-                    print(f"🎰 {COMPETITIONS.get(code, code)}: {len(games)} matchs avec cotes (reste: {remaining} req)")
-            elif response.status_code == 422:
-                pass  # Sport non dispo, normal
+                    print(f"🎰 {COMPETITIONS.get(code, code)}: {len(games)} matchs avec cotes (reste: {remaining})")
+            elif response.status_code in (404, 422):
+                pass
+            elif response.status_code == 429:
+                print(f"⚠️ {COMPETITIONS.get(code, code)}: rate limit")
             else:
                 print(f"⚠️ Odds {code}: erreur {response.status_code}")
         except Exception as e:
             print(f"❌ Odds {code}: {e}")
 
+    print(f"\n🎰 {len(odds_data)} matchs avec cotes au total")
     return odds_data
+
+
+def extract_cotes(bookmaker, home, away):
+    """Extrait les cotes 1/N/2 d'un bookmaker."""
+    for market in bookmaker.get("markets", []):
+        if market["key"] == "h2h":
+            cotes = {}
+            for o in market["outcomes"]:
+                if o["name"] == home:
+                    cotes["1"] = o["price"]
+                elif o["name"] == away:
+                    cotes["2"] = o["price"]
+                elif o["name"] == "Draw":
+                    cotes["N"] = o["price"]
+            if len(cotes) >= 2:
+                return cotes
+    return None
 
 
 def match_odds(home, away, odds_data):
     """Cherche les cotes correspondant à un match."""
-    # Essayer plusieurs combinaisons de noms
-    home_lower = home.lower()
-    away_lower = away.lower()
+    home_l = home.lower().strip()
+    away_l = away.lower().strip()
 
-    for key, cotes in odds_data.items():
-        parts = key.split("|")
-        if len(parts) == 2:
-            h, a = parts
-            # Match partiel (un mot en commun)
-            if (any(w in h for w in home_lower.split() if len(w) > 3) and
-                any(w in a for w in away_lower.split() if len(w) > 3)):
-                return cotes
+    # Match exact
+    key = f"{home_l}|{away_l}"
+    if key in odds_data:
+        return odds_data[key]
+
+    # Match partiel : chercher des mots en commun
+    home_words = [w for w in home_l.replace("fc", "").replace("ac", "").split() if len(w) > 3]
+    away_words = [w for w in away_l.replace("fc", "").replace("ac", "").split() if len(w) > 3]
+
+    for okey, cotes in odds_data.items():
+        parts = okey.split("|")
+        if len(parts) != 2:
+            continue
+        h, a = parts
+
+        home_match = any(w in h for w in home_words) if home_words else False
+        away_match = any(w in a for w in away_words) if away_words else False
+
+        if home_match and away_match:
+            return cotes
+
     return None
 
 
@@ -145,7 +192,7 @@ def get_fixtures():
 
 
 def format_message(matches, odds_data):
-    """Formate les matchs avec cotes en message Telegram."""
+    """Formate les matchs avec cotes."""
     tz_fr = timezone(timedelta(hours=1))
     today = datetime.now(tz_fr).strftime("%d/%m/%Y")
     message = f"⚽ *Matchs du jour — {today}*\n\n"
@@ -175,7 +222,6 @@ def format_message(matches, odds_data):
         else:
             score_str = ""
 
-        # Tour de coupe
         stage = match.get("stage", "")
         stage_labels = {
             "FINAL": "🏅 Finale", "SEMI_FINALS": "Demi",
@@ -184,13 +230,14 @@ def format_message(matches, odds_data):
         }
         stage_str = f" ({stage_labels[stage]})" if stage in stage_labels else ""
 
-        # Cotes Betclic
+        # Cotes
         cotes = match_odds(home, away, odds_data)
         if cotes and status not in ("FINISHED", "IN_PLAY", "PAUSED"):
             c1 = cotes.get("1", "-")
             cn = cotes.get("N", "-")
             c2 = cotes.get("2", "-")
-            cotes_str = f"\n      📊 Betclic: {c1} | {cn} | {c2}"
+            bk = cotes.get("bk", "")
+            cotes_str = f"\n      📊 {bk}: {c1} | {cn} | {c2}"
         else:
             cotes_str = ""
 
@@ -214,7 +261,6 @@ def format_message(matches, odds_data):
 
 
 def send_telegram(message):
-    """Envoie le message via Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     response = requests.post(url, json=payload)
@@ -232,8 +278,6 @@ def main():
     print("=" * 50)
 
     odds_data = get_odds()
-    print(f"🎰 {len(odds_data)} matchs avec cotes trouvés\n")
-
     matches = get_fixtures()
     print(f"\n📋 {len(matches)} matchs trouvés")
 
