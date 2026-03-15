@@ -6,164 +6,33 @@ from datetime import datetime, timezone, timedelta
 API_KEY = os.environ.get("FOOTBALL_DATA_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# Championnats + Coupes + Coupes d'Europe
+# Championnats + Coupes + Champions League
 COMPETITIONS = {
+    # Championnats
     "FL1": "🇫🇷 Ligue 1",
     "PL":  "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
     "PD":  "🇪🇸 La Liga",
     "SA":  "🇮🇹 Serie A",
     "BL1": "🇩🇪 Bundesliga",
+    # Coupes nationales
     "FAC": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 FA Cup",
     "DFB": "🇩🇪 DFB-Pokal",
     "CIT": "🇮🇹 Coppa Italia",
     "CDR": "🇪🇸 Copa del Rey",
     "FLC": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 League Cup",
+    # Coupes d'Europe
     "CL":  "🏆 Champions League",
     "EL":  "🏆 Europa League",
     "UCL": "🏆 Conference League",
 }
 
-ODDS_SPORT_KEYS = {
-    "FL1": "soccer_france_ligue_one",
-    "PL":  "soccer_epl",
-    "PD":  "soccer_spain_la_liga",
-    "SA":  "soccer_italy_serie_a",
-    "BL1": "soccer_germany_bundesliga",
-    "FAC": "soccer_fa_cup",
-    "CL":  "soccer_uefa_champs_league",
-    "EL":  "soccer_uefa_europa_league",
-    "UCL": "soccer_uefa_europa_conference_league",
-    "CDR": "soccer_spain_copa_del_rey",
-    "CIT": "soccer_italy_coppa_italia",
-    "DFB": "soccer_germany_dfb_pokal",
-    "FLC": "soccer_efl_cup",
-}
-
-# Bookmakers préférés par ordre de priorité
-PREFERRED_BOOKMAKERS = ["betclic", "winamax", "unibet", "betsson", "pinnacle", "1xbet"]
-
+# Ordre d'affichage dans le message
 DISPLAY_ORDER = ["FL1", "PL", "PD", "SA", "BL1", "CL", "EL", "UCL", "FAC", "FLC", "CDR", "CIT", "DFB"]
 
 
-def get_odds():
-    """Récupère les cotes pour tous les matchs du jour."""
-    odds_data = {}
-    if not ODDS_API_KEY:
-        print("⚠️ Pas de clé Odds API")
-        return odds_data
-
-    for code, sport_key in ODDS_SPORT_KEYS.items():
-        url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
-        params = {
-            "apiKey": ODDS_API_KEY,
-            "regions": "eu",
-            "markets": "h2h",
-            "oddsFormat": "decimal",
-        }
-        try:
-            response = requests.get(url, params=params)
-            if response.status_code == 200:
-                games = response.json()
-                for game in games:
-                    home = game.get("home_team", "")
-                    away = game.get("away_team", "")
-
-                    # Chercher le meilleur bookmaker disponible
-                    best_cotes = None
-                    best_bk = None
-
-                    bookmakers = game.get("bookmakers", [])
-                    # D'abord chercher un bookmaker préféré
-                    for pref in PREFERRED_BOOKMAKERS:
-                        for bk in bookmakers:
-                            if bk["key"] == pref:
-                                cotes = extract_cotes(bk, home, away)
-                                if cotes:
-                                    best_cotes = cotes
-                                    best_bk = bk.get("title", pref)
-                                    break
-                        if best_cotes:
-                            break
-
-                    # Sinon prendre le premier bookmaker dispo
-                    if not best_cotes and bookmakers:
-                        bk = bookmakers[0]
-                        cotes = extract_cotes(bk, home, away)
-                        if cotes:
-                            best_cotes = cotes
-                            best_bk = bk.get("title", "?")
-
-                    if best_cotes:
-                        # Stocker avec plusieurs clés pour faciliter le matching
-                        best_cotes["bk"] = best_bk
-                        odds_data[f"{home}|{away}".lower()] = best_cotes
-
-                remaining = response.headers.get("x-requests-remaining", "?")
-                if games:
-                    print(f"🎰 {COMPETITIONS.get(code, code)}: {len(games)} matchs avec cotes (reste: {remaining})")
-            elif response.status_code in (404, 422):
-                pass
-            elif response.status_code == 429:
-                print(f"⚠️ {COMPETITIONS.get(code, code)}: rate limit")
-            else:
-                print(f"⚠️ Odds {code}: erreur {response.status_code}")
-        except Exception as e:
-            print(f"❌ Odds {code}: {e}")
-
-    print(f"\n🎰 {len(odds_data)} matchs avec cotes au total")
-    return odds_data
-
-
-def extract_cotes(bookmaker, home, away):
-    """Extrait les cotes 1/N/2 d'un bookmaker."""
-    for market in bookmaker.get("markets", []):
-        if market["key"] == "h2h":
-            cotes = {}
-            for o in market["outcomes"]:
-                if o["name"] == home:
-                    cotes["1"] = o["price"]
-                elif o["name"] == away:
-                    cotes["2"] = o["price"]
-                elif o["name"] == "Draw":
-                    cotes["N"] = o["price"]
-            if len(cotes) >= 2:
-                return cotes
-    return None
-
-
-def match_odds(home, away, odds_data):
-    """Cherche les cotes correspondant à un match."""
-    home_l = home.lower().strip()
-    away_l = away.lower().strip()
-
-    # Match exact
-    key = f"{home_l}|{away_l}"
-    if key in odds_data:
-        return odds_data[key]
-
-    # Match partiel : chercher des mots en commun
-    home_words = [w for w in home_l.replace("fc", "").replace("ac", "").split() if len(w) > 3]
-    away_words = [w for w in away_l.replace("fc", "").replace("ac", "").split() if len(w) > 3]
-
-    for okey, cotes in odds_data.items():
-        parts = okey.split("|")
-        if len(parts) != 2:
-            continue
-        h, a = parts
-
-        home_match = any(w in h for w in home_words) if home_words else False
-        away_match = any(w in a for w in away_words) if away_words else False
-
-        if home_match and away_match:
-            return cotes
-
-    return None
-
-
 def get_fixtures():
-    """Récupère les matchs du jour."""
+    """Récupère les matchs du jour pour chaque compétition."""
     tz_fr = timezone(timedelta(hours=1))
     today = datetime.now(tz_fr)
     today_str = today.strftime("%Y-%m-%d")
@@ -176,23 +45,28 @@ def get_fixtures():
     for code, name in COMPETITIONS.items():
         url = f"https://api.football-data.org/v4/competitions/{code}/matches"
         params = {"dateFrom": today_str, "dateTo": tomorrow_str}
+
         try:
             response = requests.get(url, headers=headers, params=params)
             if response.status_code == 200:
-                matches = response.json().get("matches", [])
+                data = response.json()
+                matches = data.get("matches", [])
                 if matches:
                     all_matches.extend(matches)
                     print(f"✅ {name}: {len(matches)} matchs")
+                # Pas de message si 0 match (normal si pas de journée)
             elif response.status_code == 403:
-                print(f"🔒 {name}: plan payant")
+                print(f"🔒 {name}: non dispo (plan payant)")
+            else:
+                print(f"⚠️ {name}: erreur {response.status_code}")
         except Exception as e:
             print(f"❌ {name}: {e}")
 
     return all_matches
 
 
-def format_message(matches, odds_data):
-    """Formate les matchs avec cotes."""
+def format_message(matches):
+    """Formate les matchs en message Telegram."""
     tz_fr = timezone(timedelta(hours=1))
     today = datetime.now(tz_fr).strftime("%d/%m/%Y")
     message = f"⚽ *Matchs du jour — {today}*\n\n"
@@ -222,27 +96,21 @@ def format_message(matches, odds_data):
         else:
             score_str = ""
 
+        # Pour les coupes, afficher le tour
         stage = match.get("stage", "")
         stage_labels = {
-            "FINAL": "🏅 Finale", "SEMI_FINALS": "Demi",
-            "QUARTER_FINALS": "1/4", "LAST_16": "1/8",
-            "LAST_32": "1/16", "LAST_64": "1/32",
+            "FINAL": "🏅 Finale",
+            "SEMI_FINALS": "Demi-finale",
+            "QUARTER_FINALS": "Quart de finale",
+            "LAST_16": "8e de finale",
+            "LAST_32": "16e de finale",
+            "LAST_64": "32e de finale",
+            "ROUND_4": "4e tour",
+            "ROUND_3": "3e tour",
         }
         stage_str = f" ({stage_labels[stage]})" if stage in stage_labels else ""
 
-        # Cotes
-        cotes = match_odds(home, away, odds_data)
-        if cotes and status not in ("FINISHED", "IN_PLAY", "PAUSED"):
-            c1 = cotes.get("1", "-")
-            cn = cotes.get("N", "-")
-            c2 = cotes.get("2", "-")
-            bk = cotes.get("bk", "")
-            cotes_str = f"\n      📊 {bk}: {c1} | {cn} | {c2}"
-        else:
-            cotes_str = ""
-
-        line = f"  • {home} vs {away} — {heure_str}{score_str}{stage_str}{cotes_str}"
-        par_comp[code].append((heure_str, line))
+        par_comp[code].append((heure_str, f"  • {home} vs {away} — {heure_str}{score_str}{stage_str}"))
 
     for code in DISPLAY_ORDER:
         if code in par_comp:
@@ -261,6 +129,7 @@ def format_message(matches, odds_data):
 
 
 def send_telegram(message):
+    """Envoie le message via Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     response = requests.post(url, json=payload)
@@ -271,18 +140,12 @@ def send_telegram(message):
 
 
 def main():
-    print("=" * 50)
-    print("🔄 Récupération des matchs et cotes...")
-    print(f"🔑 Football API: {'Oui' if API_KEY else 'NON'}")
-    print(f"🎰 Odds API: {'Oui' if ODDS_API_KEY else 'NON'}")
-    print("=" * 50)
-
-    odds_data = get_odds()
+    print("🔄 Récupération des matchs...")
+    print(f"🔑 Clé API: {'Oui' if API_KEY else 'NON !!!'}")
     matches = get_fixtures()
-    print(f"\n📋 {len(matches)} matchs trouvés")
-
-    message = format_message(matches, odds_data)
-    print("\n" + message)
+    print(f"\n📋 TOTAL: {len(matches)} matchs")
+    message = format_message(matches)
+    print(message)
     send_telegram(message)
 
 
