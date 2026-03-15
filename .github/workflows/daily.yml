@@ -3,7 +3,13 @@ name: Matchs du jour
 on:
   schedule:
     - cron: '0 7 * * *'
+    - cron: '0 22 * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'morning ou evening'
+        required: false
+        default: 'morning'
 
 jobs:
   send-matchs:
@@ -14,9 +20,12 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install requests
-      - run: python bot.py
+      - name: Run bot
+        run: python bot.py
         env:
           FOOTBALL_DATA_KEY: ${{ secrets.FOOTBALL_DATA_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CRON_SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_MODE: ${{ github.event.inputs.mode }}
