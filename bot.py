@@ -3,94 +3,87 @@ import os
 from datetime import datetime, timezone, timedelta
 
 # --- Configuration ---
-API_KEY = os.environ.get("API_FOOTBALL_KEY")
+API_KEY = os.environ.get("FOOTBALL_DATA_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# Les 5 grands championnats européens
+# Les 5 grands championnats
 LEAGUES = {
-    39: "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
-    61: "🇫🇷 Ligue 1",
-    135: "🇮🇹 Serie A",
-    140: "🇪🇸 La Liga",
-    78: "🇩🇪 Bundesliga"
+    "PL": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
+    "FL1": "🇫🇷 Ligue 1",
+    "SA": "🇮🇹 Serie A",
+    "PD": "🇪🇸 La Liga",
+    "BL1": "🇩🇪 Bundesliga"
 }
 
-# Les saisons à tester (la saison 2025-2026 peut être codée 2025 ou 2024)
-SEASONS = [2025, 2024]
 
 def get_fixtures():
-    """Récupère les matchs du jour pour les 5 championnats."""
-    today = datetime.now(timezone(timedelta(hours=1))).strftime("%Y-%m-%d")
-    all_fixtures = []
-    found_leagues = set()
+    """Récupère tous les matchs du jour via football-data.org."""
+    url = "https://api.football-data.org/v4/matches"
+    headers = {"X-Auth-Token": API_KEY}
 
-    for league_id in LEAGUES:
-        for season in SEASONS:
-            if league_id in found_leagues:
-                break
-
-            url = "https://v3.football.api-sports.io/fixtures"
-            params = {
-                "date": today,
-                "league": league_id,
-                "season": season
-            }
-            headers = {
-                "x-apisports-key": API_KEY
-            }
-
-            try:
-                response = requests.get(url, headers=headers, params=params)
-                data = response.json()
-                fixtures = data.get("response", [])
-                if fixtures:
-                    all_fixtures.extend(fixtures)
-                    found_leagues.add(league_id)
-                    print(f"✅ {LEAGUES[league_id]}: {len(fixtures)} matchs (saison {season})")
-                else:
-                    print(f"⚠️ {LEAGUES[league_id]}: 0 matchs pour saison {season}")
-            except Exception as e:
-                print(f"❌ Erreur pour {LEAGUES[league_id]} saison {season}: {e}")
-
-    return all_fixtures
+    try:
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        matches = data.get("matches", [])
+        # Filtrer uniquement les 5 grands championnats
+        filtered = [m for m in matches if m["competition"]["code"] in LEAGUES]
+        print(f"✅ API football-data.org: {len(filtered)} matchs trouvés sur {len(matches)} total")
+        return filtered
+    except Exception as e:
+        print(f"❌ Erreur API: {e}")
+        return []
 
 
-def format_message(fixtures):
+def format_message(matches):
     """Formate les matchs en message Telegram."""
-    today = datetime.now(timezone(timedelta(hours=1))).strftime("%d/%m/%Y")
+    tz_fr = timezone(timedelta(hours=1))
+    today = datetime.now(tz_fr).strftime("%d/%m/%Y")
     message = f"⚽ *Matchs du jour — {today}*\n\n"
 
     par_ligue = {}
-    for match in fixtures:
-        lid = match["league"]["id"]
-        if lid not in par_ligue:
-            par_ligue[lid] = []
+    for match in matches:
+        code = match["competition"]["code"]
+        if code not in par_ligue:
+            par_ligue[code] = []
 
         # Convertir l'heure en heure française
-        utc_time = datetime.fromisoformat(match["fixture"]["date"].replace("Z", "+00:00"))
-        heure_fr = utc_time.astimezone(timezone(timedelta(hours=1)))
+        utc_time = datetime.fromisoformat(match["utcDate"].replace("Z", "+00:00"))
+        heure_fr = utc_time.astimezone(tz_fr)
         heure_str = heure_fr.strftime("%Hh%M")
 
-        home = match["teams"]["home"]["name"]
-        away = match["teams"]["away"]["name"]
-        par_ligue[lid].append((heure_str, f"  • {home} vs {away} — {heure_str}"))
+        home = match["homeTeam"]["shortName"] or match["homeTeam"]["name"]
+        away = match["awayTeam"]["shortName"] or match["awayTeam"]["name"]
 
-    # Ordre d'affichage
-    ordre = [61, 39, 140, 135, 78]
-    for lid in ordre:
-        if lid in par_ligue:
-            # Trier par heure
-            par_ligue[lid].sort(key=lambda x: x[0])
-            message += f"*{LEAGUES[lid]}*\n"
-            for _, m in par_ligue[lid]:
+        # Score si le match est en cours ou terminé
+        status = match["status"]
+        if status in ("IN_PLAY", "PAUSED", "FINISHED"):
+            h_goals = match["score"]["fullTime"]["home"] or 0
+            a_goals = match["score"]["fullTime"]["away"] or 0
+            score_str = f" ({h_goals}-{a_goals})"
+            if status == "FINISHED":
+                score_str += " ✅"
+            elif status in ("IN_PLAY", "PAUSED"):
+                score_str += " 🔴 LIVE"
+        else:
+            score_str = ""
+
+        par_ligue[code].append((heure_str, f"  • {home} vs {away} — {heure_str}{score_str}"))
+
+    # Ordre d'affichage : Ligue 1 d'abord
+    ordre = ["FL1", "PL", "PD", "SA", "BL1"]
+    for code in ordre:
+        if code in par_ligue:
+            par_ligue[code].sort(key=lambda x: x[0])
+            message += f"*{LEAGUES[code]}*\n"
+            for _, m in par_ligue[code]:
                 message += f"{m}\n"
             message += "\n"
 
-    if not fixtures:
+    if not matches:
         message += "🚫 Aucun match des 5 grands championnats aujourd'hui."
     else:
-        message += f"📊 *{len(fixtures)} matchs* au total"
+        message += f"📊 *{len(matches)} matchs* au total"
 
     return message
 
@@ -112,9 +105,9 @@ def send_telegram(message):
 
 def main():
     print("🔄 Récupération des matchs...")
-    fixtures = get_fixtures()
-    print(f"📋 {len(fixtures)} matchs trouvés au total")
-    message = format_message(fixtures)
+    matches = get_fixtures()
+    print(f"📋 {len(matches)} matchs trouvés")
+    message = format_message(matches)
     print(message)
     send_telegram(message)
 
