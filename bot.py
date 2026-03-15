@@ -1,15 +1,14 @@
 import requests
 import os
-import json
 from datetime import datetime, timezone, timedelta
 
 # --- Configuration ---
 API_KEY = os.environ.get("FOOTBALL_DATA_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# Championnats + Coupes + Coupes d'Europe
+# Compétitions
 COMPETITIONS = {
     "FL1": "🇫🇷 Ligue 1", "PL": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
     "PD": "🇪🇸 La Liga", "SA": "🇮🇹 Serie A", "BL1": "🇩🇪 Bundesliga",
@@ -33,7 +32,6 @@ DISPLAY_ORDER = ["FL1", "PL", "PD", "SA", "BL1", "CL", "EL", "UCL", "FAC", "FLC"
 
 
 def get_fixtures():
-    """Récupère les matchs du jour."""
     tz_fr = timezone(timedelta(hours=1))
     today = datetime.now(tz_fr)
     today_str = today.strftime("%Y-%m-%d")
@@ -47,13 +45,13 @@ def get_fixtures():
         url = f"https://api.football-data.org/v4/competitions/{code}/matches"
         params = {"dateFrom": today_str, "dateTo": tomorrow_str}
         try:
-            response = requests.get(url, headers=headers, params=params)
-            if response.status_code == 200:
-                matches = response.json().get("matches", [])
+            resp = requests.get(url, headers=headers, params=params)
+            if resp.status_code == 200:
+                matches = resp.json().get("matches", [])
                 if matches:
                     all_matches.extend(matches)
                     print(f"✅ {name}: {len(matches)} matchs")
-            elif response.status_code == 403:
+            elif resp.status_code == 403:
                 print(f"🔒 {name}: plan payant")
         except Exception as e:
             print(f"❌ {name}: {e}")
@@ -62,7 +60,6 @@ def get_fixtures():
 
 
 def format_message(matches):
-    """Formate les matchs en message Telegram."""
     tz_fr = timezone(timedelta(hours=1))
     today = datetime.now(tz_fr).strftime("%d/%m/%Y")
     message = f"⚽ *Matchs du jour — {today}*\n\n"
@@ -121,128 +118,109 @@ def format_message(matches):
 
 
 def build_match_list_for_ai(matches):
-    """Construit une liste de matchs pour l'analyse IA."""
     tz_fr = timezone(timedelta(hours=1))
     scheduled = []
-
     for match in matches:
         if match["status"] not in ("SCHEDULED", "TIMED"):
             continue
-
         utc_time = datetime.fromisoformat(match["utcDate"].replace("Z", "+00:00"))
         heure_fr = utc_time.astimezone(tz_fr)
-
         home = match["homeTeam"].get("shortName") or match["homeTeam"]["name"]
         away = match["awayTeam"].get("shortName") or match["awayTeam"]["name"]
         comp = match["competition"]["name"]
-
         scheduled.append(f"- {home} vs {away} ({comp}, {heure_fr.strftime('%Hh%M')})")
-
     return scheduled
 
 
 def get_ai_analysis(match_list):
-    """Analyse les matchs via Gemini AI."""
-    if not GEMINI_API_KEY or not match_list:
+    if not GROQ_API_KEY or not match_list:
         return None
 
     matches_text = "\n".join(match_list)
 
-    prompt = f"""Tu es un expert en analyse de football et paris sportifs. Voici les matchs du jour :
+    prompt = f"""Tu es un expert francais en analyse de football et paris sportifs. Voici les matchs du jour :
 
 {matches_text}
 
-Analyse ces matchs et identifie les 3 à 5 meilleures opportunités de paris. Pour chaque pari recommandé :
+Analyse ces matchs et identifie les 3 a 5 meilleures opportunites de paris. Pour chaque pari recommande :
 
-1. Indique le match et le type de pari (résultat 1N2, total buts, les deux équipes marquent, etc.)
-2. Donne ta probabilité estimée (en %)
-3. Donne une note de confiance sur 10
-4. Utilise le système feu tricolore : 🟢 (8-10/10), 🟡 (6-7/10), 🔴 (4-5/10)
-5. Explique brièvement pourquoi en 1-2 lignes
+1. Le match et le type de pari (resultat 1N2, total buts, les deux equipes marquent, etc.)
+2. Ta probabilite estimee (en %)
+3. Une note de confiance sur 10
+4. Le feu tricolore : VERT (8-10/10), JAUNE (6-7/10), ROUGE (4-5/10)
+5. Une justification en 1-2 lignes
 
-RÈGLES STRICTES :
+REGLES :
 - JAMAIS de paris handicap
 - JAMAIS de cotes entre 1.01 et 1.10
-- Privilégie la probabilité de réussite
+- Privilegier la probabilite de reussite
 - Si aucun match n'inspire confiance, dis "PAS DE PARI AUJOURD'HUI"
-- Sois honnête et prudent
-- Rappelle que les paris comportent des risques
+- Sois honnete et prudent
+- Reponds en francais
+- Pas de markdown, juste du texte simple avec des emojis
+- Maximum 1500 caracteres"""
 
-Format ta réponse de manière concise pour Telegram (pas de markdown complexe, juste des emojis et du texte simple). Maximum 1500 caractères."""
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 800
-        }
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7,
+        "max_tokens": 800
     }
 
     try:
-        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
-        if response.status_code == 200:
-            data = response.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            print(f"✅ Analyse IA générée ({len(text)} caractères)")
+        resp = requests.post(url, headers=headers, json=payload)
+        if resp.status_code == 200:
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"]
+            print(f"✅ Analyse IA generee ({len(text)} caracteres)")
             return text
         else:
-            print(f"❌ Erreur Gemini: {response.status_code} - {response.text[:200]}")
+            print(f"❌ Erreur Groq: {resp.status_code} - {resp.text[:300]}")
             return None
     except Exception as e:
-        print(f"❌ Erreur Gemini: {e}")
+        print(f"❌ Erreur Groq: {e}")
         return None
 
 
 def send_telegram(message):
-    """Envoie un message via Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    # Telegram limite à 4096 caractères
     if len(message) > 4096:
         message = message[:4090] + "\n..."
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        print("✅ Message Telegram envoyé !")
+    payload = {"chat_id": CHAT_ID, "text": message}
+    resp = requests.post(url, json=payload)
+    if resp.status_code == 200:
+        print("✅ Message Telegram envoye !")
     else:
-        # Retry sans markdown si erreur de parsing
-        print(f"⚠️ Erreur Markdown, retry sans formatage...")
-        payload["parse_mode"] = ""
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            print("✅ Message envoyé (sans formatage)")
-        else:
-            print(f"❌ Erreur Telegram: {response.text[:200]}")
+        print(f"❌ Erreur Telegram: {resp.text[:200]}")
 
 
 def main():
     print("=" * 50)
-    print("🔄 Récupération des matchs...")
+    print("🔄 Recuperation des matchs...")
     print(f"🔑 Football API: {'Oui' if API_KEY else 'NON'}")
-    print(f"🤖 Gemini API: {'Oui' if GEMINI_API_KEY else 'NON'}")
+    print(f"🤖 Groq API: {'Oui' if GROQ_API_KEY else 'NON'}")
     print("=" * 50)
 
-    # 1. Récupérer et envoyer les matchs
     matches = get_fixtures()
-    print(f"\n📋 {len(matches)} matchs trouvés")
+    print(f"\n📋 {len(matches)} matchs trouves")
 
     message = format_message(matches)
-    print(message)
     send_telegram(message)
 
-    # 2. Analyse IA des matchs à venir
     match_list = build_match_list_for_ai(matches)
     if match_list:
-        print(f"\n🤖 Analyse IA de {len(match_list)} matchs à venir...")
+        print(f"\n🤖 Analyse IA de {len(match_list)} matchs a venir...")
         analysis = get_ai_analysis(match_list)
         if analysis:
-            ai_message = f"🤖 *Analyse IA — Paris du jour*\n\n{analysis}\n\n⚠️ _Rappel : les paris sportifs comportent des risques. Ne misez que ce que vous pouvez perdre._"
+            ai_message = f"🤖 ANALYSE IA — Paris du jour\n\n{analysis}\n\n⚠️ Rappel : les paris sportifs comportent des risques. Ne misez que ce que vous pouvez perdre."
             send_telegram(ai_message)
-        else:
-            print("⚠️ Pas d'analyse IA disponible")
     else:
-        print("ℹ️ Aucun match à venir à analyser")
+        print("ℹ️ Aucun match a venir a analyser")
 
 
 if __name__ == "__main__":
